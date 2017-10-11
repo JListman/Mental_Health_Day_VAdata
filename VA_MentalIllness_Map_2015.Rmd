@@ -1,0 +1,144 @@
+---
+title: "VA_MentalIllness_Map"
+author: "Jenny"
+date: "10/10/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+load packages
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(ggplot2)
+library(choroplethr)
+library(choroplethrMaps)
+```
+
+Load data from GitHub account https://github.com/mihiriyer/mental
+```{r}
+#Code from https://github.com/mihiriyer/mental
+#load station number - name -visn crosswalk from data dictionary
+sta <- xlsx::read.xlsx("NepecPtsdDataDictionary.xlsx", sheetIndex=4, stringsAsFactors=FALSE)
+
+#load le data locally (less resource intensive)
+mental <- jsonlite::fromJSON("NEPEC_AnnualDataSheet_MH_FY15.json")
+
+#combine mental and sta
+mental <- left_join(mental, sta, by="Station")
+
+#rearrange columns 
+mental <- mental[, c(6,3,7,1,2,4,5)]
+
+#remove % and , signs from values and then set to numeric data type (this is needed to sort and perform computations)
+mental$Value <- gsub("%", "", mental$Value)
+mental$Value <- gsub(",", "", mental$Value)
+mental$Value <- as.numeric(mental$Value)
+```
+
+Turn multiple variables from character to factor, at the same time.
+```{r}
+cols <- c("ValueType", "Station", "Station.Name", "Category", "Item")
+mental <- mental %>% 
+  mutate_at(cols, funs(factor(.)))
+```
+
+Create dataframe using Prevalence 
+
+```{r}
+View(subset(mental, Category == "Prevalence of Mental Illness"))
+
+Prevalence <- (subset(mental, Category == "Prevalence of Mental Illness"))
+
+Prevalence <- droplevels(Prevalence)
+Prevalence <- Prevalence[,-c(4,7)]
+Prevalence <- Prevalence %>%
+  spread(Item, Value)
+## 141 different stations  
+```
+
+
+Import location data for all VA facilities
+```{r}
+library(readxl)
+VA_locations <- read_excel("~/Downloads/mental-master/VA_Locations.xlsx", 
+                      sheet = "All VA Facilities")
+View(head(VA_locations))
+## 1920 locations, most of which are not medical, but administrative or providing non-medical services
+```
+Make sure zipcodes are read as such
+```{r}
+library(zipcode)
+
+VA_locations$Zip <- clean.zipcodes(VA_locations$Zip)
+
+names(VA_locations)[1] <- "Station"
+
+```
+
+Most VA locations are administrative or provide non-medical services. Extract only medical locations.
+```{r}
+library(stringr)
+
+VA_locations_Med <- VA_locations %>%
+  filter(str_detect(Facility, 'Medical|Health'))
+## 235 locations of possible medical facilities included in Prevalence
+
+VA_locations_Med <- VA_locations_Med[,-c(2,3,6)]
+VA_locations_Med <- unique(VA_locations_Med)
+## now 219 unique locations
+```
+
+Add Zip and State to Prevalence dataframe and calculate totals of diagnoses by State
+```{r}
+Prevalence <- merge(Prevalence, VA_locations_Med, by = "Station")
+Prevalence$State <- as.factor(Prevalence$State)
+
+Prevalence <- Prevalence %>%
+  group_by(State) %>%
+  mutate(TotStateConfirmedMI = sum(`Number of Service Users with Confirmed Mental Illness`))
+```
+
+Add state names in format needed for choropleth map
+```{r}
+data(state.regions)
+
+Prevalence <- merge(Prevalence, state.regions, by.x = "State", by.y = "abb")
+
+Prevalence_mapdata <- unique(Prevalence[,c(12,13)])
+Prevalence_mapdata$value <- Prevalence_mapdata$TotStateConfirmedMI
+
+```
+Calculate total number of veterans diagnosed and total as a percentage of all VA patients
+```{r}
+totalserviceusers <- unique(Prevalence[,c(1,9)])
+totalusers <- sum(totalserviceusers$`Total Service Users`)
+totaltreatedUS <- sum(Prevalence_mapdata$value)
+percentdiagnosed <- totaltreatedUS/totalusers
+
+```
+
+Make title and variables for a reasonably presentable legend
+```{r}
+title <- "              Over 1,500,000 Veterans (23.6% of all VA patients) Treated for Mental Illness at VA Health Facilities in 2015"
+
+Prevalence_mapdata$factorvalue <- factor(
+  cut(Prevalence_mapdata$value, c(3000, 10000, 25000, 50000, 80000, 140000)),
+  labels = c("3,000 to 10,000", "10,000 to 25,000", "25,000 to 50,000", "50,000 to 80,000", "80,000 to 140,000"))
+
+Prevalence_mapdata$value_absolute<- Prevalence_mapdata$value
+Prevalence_mapdata$value <- Prevalence_mapdata$factorvalue
+```
+
+Make map. I don't like how it looks. Did this quickly, but will return to prettify.
+
+```{r}
+VA_patientmap <- state_choropleth(Prevalence_mapdata, title = title,
+                                  legend = "Veterans Treated Per State") +
+                                  labs(caption="@jblistman. Data source: Veterans Administration NEPEC Annual Data Sheet 2015")
+
+VA_patientmap
+```
